@@ -1,6 +1,8 @@
 import logging
 import asyncio
 import os
+import threading
+from flask import Flask
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, KeyboardButton, WebAppInfo
@@ -17,6 +19,25 @@ logging.basicConfig(
     level=getattr(logging, LOG_LEVEL)
 )
 logger = logging.getLogger(__name__)
+
+# HTTP health server (для Render/UptimeRobot)
+PORT = int(os.getenv('PORT', '10000'))
+_health_app = Flask(__name__)
+
+@_health_app.get('/')
+def _health_root():
+    return 'OK', 200
+
+@_health_app.get('/health')
+def _health_check():
+    return 'healthy', 200
+
+
+def _run_health_server() -> None:
+    # В отдельном потоке, чтобы не блокировать Telegram polling
+    _logger = logging.getLogger('health')
+    _logger.info(f'Health server listening on 0.0.0.0:{PORT}')
+    _health_app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
 # 🌍 Тексты на разных языках
 LANGUAGES = {
@@ -207,7 +228,10 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 🚀 Запуск
 def main():
-    # Создаем приложение
+    # Поднимаем HTTP health-сервер для Render/UptimeRobot
+    threading.Thread(target=_run_health_server, daemon=True).start()
+
+    # Создаем приложение Telegram
     app = Application.builder().token(TOKEN).build()
 
     # Добавляем обработчики
@@ -223,12 +247,12 @@ def main():
     
     app.add_error_handler(error_handler)
 
-    # Запускаем бота с обработкой конфликтов
+    # Запускаем бота (polling)
     try:
         logger.info("🚀 Starting Actogram Bot...")
         app.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True  # Игнорируем старые сообщения
+            drop_pending_updates=True
         )
     except Exception as e:
         logger.error(f"Error starting bot: {e}")
